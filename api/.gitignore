@@ -1,0 +1,23 @@
+# PHPStorm
+.idea/
+
+# VSCode
+.vscode/
+
+# Composer
+/vendor/
+composer.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Cache and logs
+/logs/
+*.log
+/cache/
+
+# System files
+.DS_Store
+Thumbs.db
