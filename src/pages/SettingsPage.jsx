@@ -11,8 +11,15 @@ import {
     HiCheck, 
     HiX,
     HiPhotograph,
-    HiAdjustments
+    HiAdjustments,
+    HiDatabase,
+    HiClock,
+    HiMail,
 } from 'react-icons/hi';
+import RepositoryStatus from '../components/RepositoryStatus';
+
+import GitAccessChecker from '../components/GitAccessChecker';
+
 
 const SettingsPage = () => {
     // --- Hooks & State Management ---
@@ -20,7 +27,13 @@ const SettingsPage = () => {
     const { refetchSettings } = useSettings(); // تابع برای به‌روزرسانی آنی تم
     const isAdmin = user?.role_id === 1;
 
-    // State برای فرم تنظیمات عمومی (فقط ادمین)
+    // State های مربوط به UI
+    const [loading, setLoading] = useState(true);
+    const [isSubmitting, setIsSubmitting] = useState({ global: false, user: false });
+    const [error, setError] = useState('');
+    const [successMessage, setSuccessMessage] = useState('');
+
+    // State های مربوط به تنظیمات
     const [globalSettings, setGlobalSettings] = useState({ 
         site_title: '', 
         logo_url: '', 
@@ -34,17 +47,116 @@ const SettingsPage = () => {
         github_access_token: '',
         github_webhook_secret: ''
     });
+
+    const [userSettings, setUserSettings] = useState({ 
+        font_family: '', 
+        primary_color: '', 
+        text_color: '' 
+    });
+
+    // State های مربوط به گیت
+    const [localGitInfo, setLocalGitInfo] = useState({
+        installed: false,
+        config: null,
+        repoStatus: null
+    });
+
+    const [gitAccessStatus, setGitAccessStatus] = useState({
+        react: null,
+        php: null
+    });
+
+    // State های مربوط به لوگو
     const [logoFile, setLogoFile] = useState(null);
     const [previewLogo, setPreviewLogo] = useState('');
 
-    // State برای فرم تنظیمات شخصی (همه کاربران)
-    const [userSettings, setUserSettings] = useState({ font_family: '', primary_color: '', text_color: '' });
+    // بررسی وضعیت گیت محلی و دسترسی به مخازن
+    // بررسی نصب بودن گیت و دسترسی به مخازن
+    useEffect(() => {
+        const checkGitStatus = async () => {
+            // فقط برای کاربران ادمین
+            if (!isAdmin) return;
 
-    // State برای مدیریت وضعیت‌های UI
-    const [loading, setLoading] = useState(true);
-    const [isSubmitting, setIsSubmitting] = useState({ global: false, user: false });
-    const [error, setError] = useState('');
-    const [successMessage, setSuccessMessage] = useState('');
+            try {
+                // بررسی نصب بودن گیت
+                const gitResponse = await fetch('http://localhost/api/git_local_info.php', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ check_installation: true })
+                });
+
+                const gitData = await gitResponse.json();
+                setLocalGitInfo(prev => ({
+                    ...prev,
+                    installed: gitData.success && gitData.data?.installed
+                }));
+
+                // اگر گیت نصب نیست یا توکن گیت‌هاب وجود ندارد، بررسی دسترسی به مخازن را انجام نمی‌دهیم
+                if (!gitData.success || !gitData.data?.installed || !globalSettings.github_access_token) {
+                    return;
+                }
+
+                // بررسی دسترسی به مخازن شرکت
+                const checkRepoAccess = async (repoUrl, type) => {
+                    if (!repoUrl) return;
+
+                    try {
+                        const response = await fetch('http://localhost/api/git_local_info.php', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                token: globalSettings.github_access_token,
+                                repoUrl: repoUrl
+                            })
+                        });
+
+                        const data = await response.json();
+                        setGitAccessStatus(prev => ({
+                            ...prev,
+                            [type]: {
+                                success: data.success,
+                                hasAccess: data.success ? data.data?.hasAccess : false,
+                                error: data.success ? null : data.error
+                            }
+                        }));
+                    } catch (error) {
+                        setGitAccessStatus(prev => ({
+                            ...prev,
+                            [type]: {
+                                success: false,
+                                hasAccess: false,
+                                error: error.message
+                            }
+                        }));
+                    }
+                };
+
+                // بررسی همزمان هر دو مخزن
+                await Promise.all([
+                    checkRepoAccess(globalSettings.company_react_repo, 'react'),
+                    checkRepoAccess(globalSettings.company_php_repo, 'php')
+                ]);
+
+            } catch (error) {
+                console.error('Error checking git status:', error);
+                setLocalGitInfo(prev => ({ ...prev, installed: false }));
+                setGitAccessStatus({
+                    react: { success: false, error: error.message },
+                    php: { success: false, error: error.message }
+                });
+            }
+        };
+
+        checkGitStatus();
+    }, [isAdmin, token, globalSettings.github_access_token, globalSettings.company_react_repo, globalSettings.company_php_repo]);
+
+
 
     // --- Data Fetching ---
     useEffect(() => {
@@ -74,8 +186,12 @@ const SettingsPage = () => {
                     setGlobalSettings(globalData);
                     setPreviewLogo(globalData.logo_url || '');
                 } else {
-                    // اگر کاربر ادمین نباشد، این خطا طبیعی است و نیازی به نمایش آن نیست
-                    if (isAdmin) throw new Error(globalData.error || 'خطا در دریافت تنظیمات عمومی');
+                    // اگر کد خطا 403 باشد و کاربر ادمین نباشد، خطا را نادیده می‌گیریم
+                    if (globalSettingsRes.status === 403 && !isAdmin) {
+                        return;
+                    }
+                    // در غیر این صورت، خطا را نمایش می‌دهیم
+                    throw new Error(globalData.error || 'خطا در دریافت تنظیمات عمومی');
                 }
 
             } catch (err) {
@@ -115,7 +231,10 @@ const SettingsPage = () => {
         try {
             const response = await fetch("http://localhost/api/users.php/settings", {
                 method: 'POST',
-                headers: { "Authorization": `Bearer ${token}` },
+                headers: { 
+                    "Authorization": `Bearer ${token}`
+                    // Content-Type will be automatically set by the browser for FormData
+                },
                 body: formData
             });
             const result = await response.json();
@@ -180,6 +299,21 @@ const SettingsPage = () => {
     };
 
 
+    // --- GitHub Access Handlers ---
+    const handleReactRepoAccessChecked = (result) => {
+        setGitAccessStatus(prev => ({
+            ...prev,
+            react: result
+        }));
+    };
+
+    const handlePhpRepoAccessChecked = (result) => {
+        setGitAccessStatus(prev => ({
+            ...prev,
+            php: result
+        }));
+    };
+
     // --- Render Logic ---
     if (loading) return (
         <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center">
@@ -217,7 +351,152 @@ const SettingsPage = () => {
                     </div>
                 </div>
 
-                {/* بخش تنظیمات شخصی */}
+                {/* نمایش وضعیت مخازن */}
+                {isAdmin && (
+                    <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+                        <div className="flex items-center mb-4">
+                            <HiDatabase className="text-2xl text-blue-600 mr-2" />
+                            <h2 className="text-xl font-bold">وضعیت مخازن</h2>
+                        </div>
+
+                        {/* اطلاعات گیت محلی */}
+                        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+                            <h3 className="font-semibold mb-3">گیت محلی</h3>
+                            {localGitInfo.installed ? (
+                                <div className="space-y-2">
+                                    {/* نمایش اطلاعات کانفیگ گیت */}
+                                    {localGitInfo.config && (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="flex items-center text-sm">
+                                                <HiUser className="text-gray-500 mr-2" />
+                                                <span className="text-gray-600">نام کاربری: </span>
+                                                <span className="font-medium mr-1">{localGitInfo.config.userName || 'تنظیم نشده'}</span>
+                                            </div>
+                                            <div className="flex items-center text-sm">
+                                                <HiMail className="text-gray-500 mr-2" />
+                                                <span className="text-gray-600">ایمیل: </span>
+                                                <span className="font-medium mr-1">{localGitInfo.config.userEmail || 'تنظیم نشده'}</span>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* نمایش وضعیت مخزن */}
+                                    {localGitInfo.repoStatus && (
+                                        <div className="mt-3 space-y-2 text-sm">
+                                            {localGitInfo.repoStatus.isRepo ? (
+                                                <>
+                                                    {localGitInfo.repoStatus.currentBranch && (
+                                                        <div className="flex items-center">
+                                                            <span className="text-gray-600 ml-2">شاخه فعلی:</span>
+                                                            <span className="font-medium">{localGitInfo.repoStatus.currentBranch}</span>
+                                                        </div>
+                                                    )}
+                                                    <div className="flex items-center">
+                                                        <span className="text-gray-600 ml-2">وضعیت تغییرات:</span>
+                                                        {localGitInfo.repoStatus.hasChanges ? (
+                                                            <span className="text-yellow-600 flex items-center">
+                                                                <HiClock className="mr-1" /> تغییرات ذخیره نشده
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-green-600 flex items-center">
+                                                                <HiCheck className="mr-1" /> همه تغییرات ذخیره شده‌اند
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {localGitInfo.repoStatus.initialRepo ? (
+                                                        <div className="text-blue-600">
+                                                            <span>مخزن تازه ایجاد شده - هنوز کامیتی ثبت نشده است</span>
+                                                        </div>
+                                                    ) : localGitInfo.repoStatus.lastCommit && (
+                                                        <div className="border-t pt-2 mt-2">
+                                                            <p className="font-medium mb-1">آخرین کامیت:</p>
+                                                            <div className="text-gray-600">
+                                                                <p>{localGitInfo.repoStatus.lastCommit.message}</p>
+                                                                <div className="flex items-center gap-2 mt-1 text-sm">
+                                                                    <span>{localGitInfo.repoStatus.lastCommit.author}</span>
+                                                                    <span>•</span>
+                                                                    <span>{localGitInfo.repoStatus.lastCommit.date}</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </>
+                                            ) : (
+                                                <div className="text-yellow-600 flex items-center">
+                                                    <HiX className="mr-1" />
+                                                    <span>این پوشه یک مخزن گیت نیست</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-red-600 flex items-center">
+                                    <HiX className="mr-1" />
+                                    <span>گیت روی سیستم نصب نشده است</span>
+                                </div>
+                            )}
+                        </div>
+                        
+                        {/* نمایش مخازن شرکت */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* React Repository */}
+                            <div className="border rounded-lg p-4">
+                                <h3 className="font-semibold mb-2">مخزن React</h3>
+                                <div className="space-y-2">
+                                    <p className="text-sm">
+                                        <span className="font-medium ml-2">آدرس مخزن:</span>
+                                        <span className="text-gray-600">{globalSettings.company_react_repo || 'تنظیم نشده'}</span>
+                                    </p>
+                                    <p className="text-sm">
+                                        <span className="font-medium ml-2">شاخه اصلی:</span>
+                                        <span className="text-gray-600">{globalSettings.company_react_branch || 'main'}</span>
+                                    </p>
+                                    <div className="flex items-center">
+                                        <span className="font-medium ml-2">وضعیت:</span>
+                                        {globalSettings.company_react_repo ? (
+                                            <span className="flex items-center text-green-600">
+                                                <HiCheck className="mr-1" /> فعال
+                                            </span>
+                                        ) : (
+                                            <span className="flex items-center text-red-600">
+                                                <HiX className="mr-1" /> غیرفعال
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* PHP Repository */}
+                            <div className="border rounded-lg p-4">
+                                <h3 className="font-semibold mb-2">مخزن PHP</h3>
+                                <div className="space-y-2">
+                                    <p className="text-sm">
+                                        <span className="font-medium ml-2">آدرس مخزن:</span>
+                                        <span className="text-gray-600">{globalSettings.company_php_repo || 'تنظیم نشده'}</span>
+                                    </p>
+                                    <p className="text-sm">
+                                        <span className="font-medium ml-2">شاخه اصلی:</span>
+                                        <span className="text-gray-600">{globalSettings.company_php_branch || 'main'}</span>
+                                    </p>
+                                    <div className="flex items-center">
+                                        <span className="font-medium ml-2">وضعیت:</span>
+                                        {globalSettings.company_php_repo ? (
+                                            <span className="flex items-center text-green-600">
+                                                <HiCheck className="mr-1" /> فعال
+                                            </span>
+                                        ) : (
+                                            <span className="flex items-center text-red-600">
+                                                <HiX className="mr-1" /> غیرفعال
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* بخش تنظیمات شخصی */}
                 <form onSubmit={handleUserSubmit} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                     <div className="border-b border-gray-100 p-6">
@@ -233,18 +512,6 @@ const SettingsPage = () => {
                             </div>
                         </div>
                     </div>
-                
-                <div className="border-b border-gray-100 p-6">
-                    <div className="flex items-center space-x-4 space-x-reverse">
-                        <div className="p-2 bg-blue-50 rounded-lg">
-                            <HiUser className="w-5 h-5 text-blue-500" />
-                        </div>
-                        <div>
-                            <h2 className="text-lg font-bold text-gray-900">تنظیمات شخصی</h2>
-                            <p className="text-sm text-gray-500">تنظیمات اختصاصی شما که بر تنظیمات عمومی اولویت دارد</p>
-                        </div>
-                    </div>
-                </div>
 
                 <div className="p-6 space-y-6">
                     {successMessage && (
@@ -374,6 +641,23 @@ const SettingsPage = () => {
                                         placeholder="مثال: https://github.com/company/react-project.git"
                                         className="block w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary/20 focus:border-primary transition-colors duration-200"
                                     />
+                                    {globalSettings.github_access_token && globalSettings.company_react_repo && (
+                                        <div className="mt-2">
+                                            <GitAccessChecker
+                                                token={globalSettings.github_access_token}
+                                                repoUrl={globalSettings.company_react_repo}
+                                                onAccessChecked={handleReactRepoAccessChecked}
+                                            />
+                                            {gitAccessStatus.react && (
+                                                <div className={`mt-2 text-sm ${gitAccessStatus.react.success ? 'text-green-600' : 'text-red-600'}`}>
+                                                    {gitAccessStatus.react.success ? 
+                                                        'دسترسی به مخزن تایید شد' : 
+                                                        `خطا: ${gitAccessStatus.react.error}`
+                                                    }
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                     <div className="mt-2">
                                         <label className="block text-sm font-medium text-gray-700 mb-2">
                                             شاخه اصلی React
@@ -400,6 +684,23 @@ const SettingsPage = () => {
                                         placeholder="مثال: https://github.com/company/php-project.git"
                                         className="block w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary/20 focus:border-primary transition-colors duration-200"
                                     />
+                                    {globalSettings.github_access_token && globalSettings.company_php_repo && (
+                                        <div className="mt-2">
+                                            <GitAccessChecker
+                                                token={globalSettings.github_access_token}
+                                                repoUrl={globalSettings.company_php_repo}
+                                                onAccessChecked={handlePhpRepoAccessChecked}
+                                            />
+                                            {gitAccessStatus.php && (
+                                                <div className={`mt-2 text-sm ${gitAccessStatus.php.success ? 'text-green-600' : 'text-red-600'}`}>
+                                                    {gitAccessStatus.php.success ? 
+                                                        'دسترسی به مخزن تایید شد' : 
+                                                        `خطا: ${gitAccessStatus.php.error}`
+                                                    }
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                     <div className="mt-2">
                                         <label className="block text-sm font-medium text-gray-700 mb-2">
                                             شاخه اصلی PHP

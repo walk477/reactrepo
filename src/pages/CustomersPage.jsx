@@ -65,15 +65,15 @@ const CustomersPage = () => {
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || "خطا در دریافت اطلاعات");
-            
-            console.log('First customer complete data:', result[0]); // برای دیدن همه فیلدها
-            
+
+            console.log('First customer complete data:', result?.customers); // برای دیدن همه فیلدها
+
             // بررسی ساختار داده‌ها و تبدیل به فرمت مورد نیاز
             const customersData = Array.isArray(result) ? result : [];
             console.log('Customers data:', customersData); // برای دیباگ
             
-            setCustomers(customersData);
-            setFilteredCustomers(customersData);
+            setCustomers(result?.customers);
+            setFilteredCustomers(result?.customers);
         } catch (err) {
             setError(err.message);
         } finally {

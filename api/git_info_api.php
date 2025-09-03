@@ -14,6 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
 }
 
 require_once './ApiBase.php';
+require_once './GitConnection.php';
 
 class GitInfoAPI extends ApiBase {
     private string $githubApiUrl = 'https://api.github.com';
@@ -44,16 +45,36 @@ class GitInfoAPI extends ApiBase {
             $owner = $matches[1];
             $repo = $matches[2];
 
-            // دریافت اطلاعات مخزن
-            $repoInfo = $this->fetchRepositoryInfo($owner, $repo, $data['token']);
-            
-            // دریافت لیست شاخه‌ها
-            $branches = $this->fetchBranches($owner, $repo, $data['token']);
-
-            $this->sendResponse([
-                'repository' => $repoInfo,
-                'branches' => $branches
-            ]);
+            // First try direct git communication
+            try {
+                $output = GitConnection::executeGitCommand(
+                    sprintf('git ls-remote %s HEAD', escapeshellarg($data['repositoryUrl']))
+                );
+                
+                // If successful, fetch additional info
+                $repoInfo = $this->fetchRepositoryInfo($owner, $repo, $data['token']);
+                $branches = $this->fetchBranches($owner, $repo, $data['token']);
+                
+                $this->sendResponse([
+                    'success' => true,
+                    'output' => $output,
+                    'repository' => $repoInfo,
+                    'branches' => $branches
+                ]);
+            } catch (Exception $gitError) {
+                // Log the original error
+                error_log("Git connection error: " . $gitError->getMessage());
+                
+                // Try to fetch info through API only
+                $repoInfo = $this->fetchRepositoryInfo($owner, $repo, $data['token']);
+                $branches = $this->fetchBranches($owner, $repo, $data['token']);
+                
+                $this->sendResponse([
+                    'success' => true,
+                    'repository' => $repoInfo,
+                    'branches' => $branches,
+                    'warning' => 'Direct git connection failed, using API only'
+                ]);
 
         } catch (Exception $e) {
             $this->sendResponse(['error' => $e->getMessage()], 500);

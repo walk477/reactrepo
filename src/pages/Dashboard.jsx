@@ -8,6 +8,10 @@ import { HiViewGrid, HiUserGroup, HiChartBar, HiCog } from 'react-icons/hi';
 const CustomerProjectCard = ({ customer, token }) => {
     const [status, setStatus] = useState({ loading: false, message: '', needsUpdate: false });
     const [output, setOutput] = useState('');
+    // جدید: State برای وضعیت اتصال به گیت
+    const [connectionStatus, setConnectionStatus] = useState('checking'); // مقادیر ممکن: 'checking', 'connected', 'error'
+    // جدید: State برای زمان آخرین به‌روزرسانی موفق
+    const [lastUpdated, setLastUpdated] = useState(null);
 
     const runGitCommand = async (command, branch = 'main') => {
         setStatus({ loading: true, message: `در حال اجرای ${command}...`, needsUpdate: false });
@@ -21,20 +25,31 @@ const CustomerProjectCard = ({ customer, token }) => {
             const result = await response.json();
             if (!response.ok) throw new Error(result.error);
 
+            // جدید: در اولین اجرای موفق، وضعیت اتصال را 'connected' قرار بده
+            setConnectionStatus('connected');
             setOutput(result.output);
+
             if (command === 'status') {
                 if (result.output.trim() === '') {
                     setStatus({ loading: false, message: 'پروژه به‌روز است.', needsUpdate: false });
                 } else {
                     setStatus({ loading: false, message: 'تغییرات جدیدی در دسترس است!', needsUpdate: true });
                 }
+            } else if (command === 'pull') {
+                // جدید: پس از pull موفق، زمان را ذخیره کن
+                setLastUpdated(new Date());
+                // وضعیت را دوباره بررسی کن تا پیام "پروژه به‌روز است" نمایش داده شود
+                await runGitCommand('status', branch);
+                setStatus(prev => ({...prev, message: 'تغییرات با موفقیت دریافت شد.'}));
             } else {
-                // پس از pull یا checkout، وضعیت را دوباره بررسی کن
+                 // برای دستورات دیگر مثل checkout
                 await runGitCommand('status', branch);
                 setStatus(prev => ({...prev, message: 'عملیات با موفقیت انجام شد.'}));
             }
 
         } catch (err) {
+            // جدید: در صورت خطا، وضعیت اتصال را 'error' قرار بده
+            setConnectionStatus('error');
             setStatus({ loading: false, message: `خطا: ${err.message}`, needsUpdate: false });
         }
     };
@@ -45,21 +60,34 @@ const CustomerProjectCard = ({ customer, token }) => {
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     return (
-        <div className="bg-white p-4 rounded-lg shadow-md border-l-4 border-blue-500">
-            <div className="flex justify-between items-center">
-                <h3 className="text-lg font-bold text-gray-800">{customer.company_name}</h3>
-                <Link to={`/admin/customers/edit/${customer.id}`} className="text-xs text-blue-600 hover:underline">مشاهده جزئیات</Link>
+        <div className="bg-white p-4 rounded-lg shadow-md border-l-4 border-blue-500 flex flex-col">
+            <div className="flex justify-between items-start">
+                <div className="flex items-center gap-2">
+                    {/* جدید: نمایش دایره وضعیت اتصال */}
+                    {connectionStatus === 'connected' && <span className="w-3 h-3 bg-green-500 rounded-full" title="اتصال به گیت موفق بود"></span>}
+                    {connectionStatus === 'error' && <span className="w-3 h-3 bg-red-500 rounded-full" title="خطا در اتصال به گیت"></span>}
+                    {connectionStatus === 'checking' && <span className="w-3 h-3 bg-yellow-400 rounded-full animate-pulse" title="در حال بررسی اتصال..."></span>}
+                    <h3 className="text-lg font-bold text-gray-800">{customer.company_name}</h3>
+                </div>
+                <Link to={`/admin/customers/edit/${customer.id}`} className="text-xs text-blue-600 hover:underline flex-shrink-0">مشاهده جزئیات</Link>
             </div>
-            <p className="text-sm text-gray-500 mb-4">{customer.contact_person_name}</p>
+            <p className="text-sm text-gray-500 mb-2">{customer.contact_person_name}</p>
+
+            {/* جدید: نمایش زمان آخرین به‌روزرسانی */}
+            {lastUpdated && (
+                <p className="text-xs text-gray-500 mb-3">
+                    آخرین دریافت تغییرات: {lastUpdated.toLocaleString('fa-IR')}
+                </p>
+            )}
             
             <div className="mb-2 text-sm">
-                <span className="font-semibold">وضعیت:</span>
+                <span className="font-semibold">وضعیت پروژه:</span>
                 <span className={`mr-2 font-bold ${status.needsUpdate ? 'text-yellow-600' : 'text-green-600'}`}>
                     {status.loading ? 'در حال بررسی...' : status.message}
                 </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 mt-auto pt-3 border-t border-gray-100">
                 <button onClick={() => runGitCommand('status')} disabled={status.loading} className="bg-gray-600 text-white py-1 px-3 rounded-md text-sm hover:bg-gray-700 disabled:bg-gray-400">
                     بررسی مجدد
                 </button>
@@ -103,9 +131,11 @@ const Dashboard = () => {
                 const response = await fetch("http://localhost/api/customers.php/customers", {
                     headers: { "Authorization": `Bearer ${token}` }
                 });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'خطا در دریافت اطلاعات');
-                setCustomers(data.filter(c => c.gitlab_ssh_url && c.project_server_path));
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'خطا در دریافت اطلاعات');
+                // اطمینان از اینکه داده‌های دریافتی آرایه هستند
+                const customers = Array.isArray(result.customers) ? result.customers : [];
+                setCustomers(customers.filter(c => c.git_react_repo || c.git_php_repo));
             } catch (err) {
                 setError(err.message);
             } finally {
@@ -114,6 +144,8 @@ const Dashboard = () => {
         };
         if(token) fetchCustomers();
     }, [token]);
+
+     
 
     const renderTabContent = () => {
         switch (activeTab) {
